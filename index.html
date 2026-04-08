@@ -392,16 +392,13 @@ let lightOn=false, battery=100, maxBattery=100;
 let lightLow=false;
 let levelTimer=0, animId=null, lastTs=0;
 let currentLevel=1;
-let memoryCanvas, memCtx; // where player has been
-
-// memory decay map [y][x] = 0..1
-let memoryMap;
+let memoryMap, trailMap;
 
 function initMemory(){
-  memoryCanvas=document.createElement('canvas');
-  memoryCanvas.width=W; memoryCanvas.height=H;
-  memCtx=memoryCanvas.getContext('2d');
-  memoryMap=Array.from({length:mazeRows},()=>new Float32Array(mazeCols));
+  // lightMap[cy][cx] = 0..1, decays fast when light off (the "active glow")
+  // trailMap[cy][cx] = 0..1, very faint, never decays (just marks where you've been)
+  memoryMap  = Array.from({length:mazeRows}, ()=>new Float32Array(mazeCols));
+  trailMap   = Array.from({length:mazeRows}, ()=>new Float32Array(mazeCols));
 }
 
 // ═══════════════════════════════════════════════
@@ -547,8 +544,7 @@ function bfsPath(fromCx,fromCy,toCx,toCy){
 // ═══════════════════════════════════════════════
 function worldToScreen(wx,wy){ return {sx:wx-camX+W/2, sy:wy-camY+H/2}; }
 
-function drawMaze(litPoly){
-  // Build clipping region from lit polygon
+function drawMaze(litPoly, dt){
   ctx.save();
 
   // Draw subtle grid (always, very faint)
@@ -556,45 +552,69 @@ function drawMaze(litPoly){
   for(let x=0;x<W;x+=CELL){ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke(); }
   for(let y=0;y<H;y+=CELL){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(0,H);ctx.stroke(); }
 
-  // Draw memory (where player has been — very faint)
-  for(let cy=0;cy<mazeRows;cy++){
-    for(let cx=0;cx<mazeCols;cx++){
-      const m=memoryMap[cy][cx];
-      if(m<0.01) continue;
-      const {sx,sy}=worldToScreen(cx*CELL+mazeOffX, cy*CELL+mazeOffY);
-      if(sx<-CELL||sx>W+CELL||sy<-CELL||sy>H+CELL) continue;
-      drawCellWalls(cx,cy,sx,sy,`rgba(255,255,255,${m*0.06})`);
+  // Figure out which cells are currently lit
+  const litCells = new Set();
+  if(lightOn && litPoly && litPoly.length>2){
+    // Sample the lit polygon to find lit cells
+    for(let cy=0;cy<mazeRows;cy++){
+      for(let cx=0;cx<mazeCols;cx++){
+        const wx=cx*CELL+CELL/2+mazeOffX;
+        const wy=cy*CELL+CELL/2+mazeOffY;
+        if(pointInPolygon(wx,wy,litPoly)){
+          litCells.add(`${cx},${cy}`);
+        }
+      }
     }
   }
 
-  // Draw lit area walls
-  if(lightOn && litPoly && litPoly.length>2){
-    ctx.save();
-    // Clip to lit polygon
-    ctx.beginPath();
-    const first=litPoly[0];
-    const {sx:f0x,sy:f0y}=worldToScreen(first.x,first.y);
-    ctx.moveTo(f0x,f0y);
-    for(let i=1;i<litPoly.length;i++){
-      const {sx,sy}=worldToScreen(litPoly[i].x,litPoly[i].y);
-      ctx.lineTo(sx,sy);
-    }
-    ctx.closePath();
-    ctx.clip();
-
-    for(let cy=0;cy<mazeRows;cy++){
-      for(let cx=0;cx<mazeCols;cx++){
-        const {sx,sy}=worldToScreen(cx*CELL+mazeOffX, cy*CELL+mazeOffY);
-        if(sx<-CELL||sx>W+CELL||sy<-CELL||sy>H+CELL) continue;
-        drawCellWalls(cx,cy,sx,sy,'rgba(255,255,255,0.55)',true);
-        // update memory
-        memoryMap[cy][cx]=Math.min(1, memoryMap[cy][cx]+0.6);
+  // Update lightMap: lit cells go to 1, unlit cells decay to 0 over 2s
+  const decayRate = dt / 2000; // full decay in 2 seconds
+  for(let cy=0;cy<mazeRows;cy++){
+    for(let cx=0;cx<mazeCols;cx++){
+      if(litCells.has(`${cx},${cy}`)){
+        memoryMap[cy][cx] = 1;
+        trailMap[cy][cx]  = Math.min(1, trailMap[cy][cx]+0.4);
+      } else {
+        memoryMap[cy][cx] = Math.max(0, memoryMap[cy][cx]-decayRate);
       }
     }
-    ctx.restore();
+  }
+
+  // Draw trail (permanent, very faint — just enough to know you were there)
+  for(let cy=0;cy<mazeRows;cy++){
+    for(let cx=0;cx<mazeCols;cx++){
+      const t=trailMap[cy][cx];
+      if(t<0.01) continue;
+      const {sx,sy}=worldToScreen(cx*CELL+mazeOffX, cy*CELL+mazeOffY);
+      if(sx<-CELL||sx>W+CELL||sy<-CELL||sy>H+CELL) continue;
+      drawCellWalls(cx,cy,sx,sy,`rgba(255,255,255,${t*0.04})`);
+    }
+  }
+
+  // Draw active light (decaying glow)
+  for(let cy=0;cy<mazeRows;cy++){
+    for(let cx=0;cx<mazeCols;cx++){
+      const lv=memoryMap[cy][cx];
+      if(lv<0.01) continue;
+      const {sx,sy}=worldToScreen(cx*CELL+mazeOffX, cy*CELL+mazeOffY);
+      if(sx<-CELL||sx>W+CELL||sy<-CELL||sy>H+CELL) continue;
+      // glow only when strong (>0.5), fades out with lv
+      drawCellWalls(cx,cy,sx,sy,`rgba(255,255,255,${lv*0.55})`, lv>0.4);
+    }
   }
 
   ctx.restore();
+}
+
+// Point-in-polygon test (ray casting)
+function pointInPolygon(px,py,poly){
+  let inside=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i].x,yi=poly[i].y;
+    const xj=poly[j].x,yj=poly[j].y;
+    if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
 }
 
 function drawCellWalls(cx,cy,sx,sy,color,glow=false){
@@ -912,8 +932,6 @@ function gameLoop(ts){
   const cfg=LEVEL_CFG[(currentLevel-1)%LEVEL_CFG.length];
   if(lightOn){
     litPoly=castLight(player.x,player.y,player.angle,cfg.lightRadius,Math.PI*0.62);
-    // update memory
-    memoryMap[player.cy][player.cx]=1;
   }
 
   // ── MONSTERS ──────────────────────────────────
@@ -998,7 +1016,7 @@ function gameLoop(ts){
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#0a0a0a'; ctx.fillRect(0,0,W,H);
 
-  drawMaze(litPoly);
+  drawMaze(litPoly, dt);
   drawLight(player.x,player.y,litPoly);
   drawExit();
   drawMonsters();
