@@ -167,6 +167,16 @@ canvas { display:block; position:fixed; top:0; left:0; }
   pointer-events:none;
 }
 
+.pu-btn {
+  width:44px; height:44px; border-radius:50%;
+  background:rgba(255,255,255,.06); border:1.5px solid rgba(255,255,255,.12);
+  font-size:18px; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; -webkit-appearance:none; appearance:none;
+  transition:background .15s, transform .1s, opacity .2s;
+}
+.pu-btn:active { transform:scale(.88); }
+.pu-btn:disabled { opacity:.25; }
+
 #light-btn {
   width:72px; height:72px; border-radius:50%;
   background:rgba(200,241,53,.08); border:2px solid rgba(200,241,53,.25);
@@ -197,6 +207,38 @@ canvas { display:block; position:fixed; top:0; left:0; }
 .sbox-val { font-size:26px; font-weight:900; color:var(--text); letter-spacing:-1px; }
 .sbox-val.acc { color:var(--accent); }
 
+/* Powerup HUD row */
+#powerup-hud {
+  position:fixed; bottom:max(160px,22vh); right:20px;
+  z-index:40; pointer-events:none; opacity:0; transition:opacity .25s;
+  display:flex; flex-direction:column; gap:8px; align-items:flex-end;
+}
+#powerup-hud.show { opacity:1; }
+.pu-slot {
+  display:flex; align-items:center; gap:6px;
+  background:rgba(10,10,10,.7); border:1px solid var(--border);
+  border-radius:100px; padding:5px 12px 5px 8px;
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  font-size:18px; transition:opacity .3s, border-color .3s;
+}
+.pu-slot.empty { opacity:0.3; }
+.pu-slot.energy  { border-color:rgba(200,241,53,.3); }
+.pu-slot.life    { border-color:rgba(255,100,100,.3); }
+.pu-slot.weapon  { border-color:rgba(100,160,255,.3); }
+.pu-count {
+  font-size:11px; font-weight:900; font-family:'Courier New',monospace;
+  min-width:14px; text-align:center;
+}
+.pu-slot.energy .pu-count  { color:var(--accent); }
+.pu-slot.life   .pu-count  { color:#ff6464; }
+.pu-slot.weapon .pu-count  { color:#64a0ff; }
+
+/* Flash reveal overlay */
+#reveal-flash {
+  position:fixed; inset:0; z-index:38; pointer-events:none;
+  opacity:0;
+}
+
 /* monster warning pulse */
 #warning {
   position:fixed; inset:0; z-index:35; pointer-events:none;
@@ -222,16 +264,31 @@ canvas { display:block; position:fixed; top:0; left:0; }
 </div>
 
 <div id="battery-wrap">
-  <div id="battery-label">Linterna</div>
+  <div id="battery-label">Energía</div>
   <div id="battery-bar"><div id="battery-fill"></div></div>
 </div>
+
+<div id="powerup-hud">
+  <div class="pu-slot energy" id="pu-energy"><span>⚡</span><span class="pu-count" id="pu-energy-count">0</span></div>
+  <div class="pu-slot life"   id="pu-life"  ><span>❤️</span><span class="pu-count" id="pu-life-count">0</span></div>
+  <div class="pu-slot weapon" id="pu-weapon"><span>🗡️</span><span class="pu-count" id="pu-weapon-count">0</span></div>
+</div>
+
+<div id="reveal-flash"></div>
 
 <!-- Controls -->
 <div id="controls">
   <div id="joystick-zone">
     <div id="joystick-base"><div id="joystick-knob"></div></div>
   </div>
-  <button id="light-btn">◉</button>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:0">
+    <div style="display:flex;gap:8px;margin-bottom:4px">
+      <button id="pu-btn-energy" class="pu-btn" title="Usar Energía">⚡</button>
+      <button id="pu-btn-life"   class="pu-btn" title="Usar Vida">❤️</button>
+      <button id="pu-btn-weapon" class="pu-btn" title="Usar Arma">🗡️</button>
+    </div>
+    <button id="light-btn">◉</button>
+  </div>
 </div>
 
 <!-- Main overlay (start/options/gameover/levelcomplete) -->
@@ -289,6 +346,11 @@ const sfxWake    = ()=>{ tone(60,'sawtooth',.5,.35,0,200); noise(.4,.3,0,400); }
 const sfxDie     = ()=>{ tone(120,'sawtooth',.6,.4); noise(.5,.3,0,600); };
 const sfxWin     = ()=>{ tone(440,'triangle',.15,.2); tone(554,'triangle',.15,.18,.16); tone(659,'triangle',.2,.2,.32); };
 const sfxLowBat  = ()=>{ tone(300,'square',.08,.1); };
+const sfxPuEnergy= ()=>{ tone(880,'triangle',.1,.15); tone(1100,'triangle',.1,.12,.12); tone(1400,'triangle',.12,.1,.24); };
+const sfxPuLife  = ()=>{ tone(523,'sine',.12,.18); tone(659,'sine',.12,.15,.14); tone(784,'sine',.18,.18,.28); };
+const sfxPuWeapon= ()=>{ noise(.05,.2,0,800); tone(300,'sawtooth',.15,.2,.06,600); };
+const sfxKill    = ()=>{ tone(200,'sawtooth',.08,.25); noise(.12,.3,0,500); tone(150,'square',.2,.15,.1); };
+const sfxReveal  = ()=>{ tone(300,'triangle',.05,.08); tone(500,'triangle',.05,.08,.06); tone(700,'triangle',.06,.06,.12); };
 const vibe       = (p)=>{ try{ navigator.vibrate&&navigator.vibrate(p); }catch(e){} };
 
 // ═══════════════════════════════════════════════
@@ -370,22 +432,22 @@ function generateMaze(cols, rows){
 // LEVEL CONFIG
 // ═══════════════════════════════════════════════
 const LEVEL_CFG = [
-  { cols:9,  rows:12, monsters:1, battery:100, lightRadius:120 }, // 1
-  { cols:10, rows:13, monsters:1, battery:90,  lightRadius:115 }, // 2
-  { cols:11, rows:14, monsters:2, battery:85,  lightRadius:110 }, // 3
-  { cols:12, rows:15, monsters:2, battery:80,  lightRadius:105 }, // 4
-  { cols:13, rows:16, monsters:3, battery:75,  lightRadius:100 }, // 5
-  { cols:14, rows:17, monsters:3, battery:70,  lightRadius:95  }, // 6
-  { cols:15, rows:18, monsters:4, battery:65,  lightRadius:90  }, // 7
-  { cols:16, rows:19, monsters:4, battery:60,  lightRadius:85  }, // 8
-  { cols:17, rows:20, monsters:5, battery:55,  lightRadius:80  }, // 9
-  { cols:18, rows:21, monsters:6, battery:50,  lightRadius:75  }, // 10
+  { cols:9,  rows:12, monsters:1, battery:100, lightRadius:120, powerups:1 }, // 1
+  { cols:10, rows:13, monsters:1, battery:90,  lightRadius:115, powerups:1 }, // 2
+  { cols:11, rows:14, monsters:2, battery:85,  lightRadius:110, powerups:2 }, // 3
+  { cols:12, rows:15, monsters:2, battery:80,  lightRadius:105, powerups:2 }, // 4
+  { cols:13, rows:16, monsters:3, battery:75,  lightRadius:100, powerups:2 }, // 5
+  { cols:14, rows:17, monsters:3, battery:70,  lightRadius:95,  powerups:3 }, // 6
+  { cols:15, rows:18, monsters:4, battery:65,  lightRadius:90,  powerups:3 }, // 7
+  { cols:16, rows:19, monsters:4, battery:60,  lightRadius:85,  powerups:3 }, // 8
+  { cols:17, rows:20, monsters:5, battery:55,  lightRadius:80,  powerups:3 }, // 9
+  { cols:18, rows:21, monsters:6, battery:50,  lightRadius:75,  powerups:4 }, // 10
 ];
 
 // ═══════════════════════════════════════════════
 // GAME STATE
 // ═══════════════════════════════════════════════
-let STATE = 'start'; // start | playing | dead | levelcomplete | options
+let STATE = 'start'; // start | playing | dead | levelcomplete | options | revealing
 let maze, mazeW, mazeH, mazeCols, mazeRows;
 let player, monsters, exitCell;
 let lightOn=false, battery=100, maxBattery=100;
@@ -393,6 +455,15 @@ let lightLow=false;
 let levelTimer=0, animId=null, lastTs=0;
 let currentLevel=1;
 let memoryMap, trailMap;
+// Powerups
+let puEnergy=0, puLife=0, puWeapon=0;
+// Weapon state: set of monster indices that are dead
+let deadMonsters=new Set();
+// Lives/respawn
+let playerStartX=0, playerStartY=0;
+// Reveal phase (memory flash at start of level)
+let revealPhase=false, revealTimer=0;
+const REVEAL_DURATION=3000; // 3 seconds full reveal
 
 function initMemory(){
   // lightMap[cy][cx] = 0..1, decays fast when light off (the "active glow")
@@ -567,8 +638,9 @@ function drawMaze(litPoly, dt){
     }
   }
 
-  // Update lightMap: lit cells go to 1, unlit cells decay to 0 over 2s
-  const decayRate = dt / 2000; // full decay in 2 seconds
+  // Update lightMap: lit cells go to 1, unlit cells decay to 0
+  // After reveal: fast decay (2.5s total from full brightness), during play: 2s if light was on
+  const decayRate = revealPhase ? 0 : dt / (lightOn ? 2000 : 2500);
   for(let cy=0;cy<mazeRows;cy++){
     for(let cx=0;cx<mazeCols;cx++){
       if(litCells.has(`${cx},${cy}`)){
@@ -651,20 +723,44 @@ function drawPlayer(){
   const {sx,sy}=worldToScreen(player.x,player.y);
   ctx.save();
   ctx.translate(sx,sy);
+  const armed = puWeapon>0;
+  const playerColor = armed ? 'rgba(100,180,255,0.9)' : BC_HEX;
+  const glowColor   = armed ? 'rgba(100,160,255,0.6)' : BC_HEX;
   // glow ring
-  ctx.shadowColor=BC_HEX; ctx.shadowBlur=18;
+  ctx.shadowColor=glowColor; ctx.shadowBlur= armed ? 24 : 18;
   ctx.beginPath(); ctx.arc(0,0,player.r,0,Math.PI*2);
-  ctx.fillStyle=BC_HEX; ctx.fill();
+  ctx.fillStyle=playerColor; ctx.fill();
   ctx.shadowBlur=0;
   ctx.beginPath(); ctx.arc(0,0,player.r,0,Math.PI*2);
-  ctx.strokeStyle='rgba(240,237,232,.4)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.strokeStyle= armed ? 'rgba(100,200,255,.6)' : 'rgba(240,237,232,.4)';
+  ctx.lineWidth=2; ctx.stroke();
+  // Weapon indicator: small sword icon orbiting player
+  if(armed){
+    const ang=Date.now()/600;
+    const ox=Math.cos(ang)*(player.r+8), oy=Math.sin(ang)*(player.r+8);
+    ctx.font=`10px serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🗡️',ox,oy);
+  }
   ctx.restore();
 }
 const BC_HEX='rgba(240,237,232,0.9)';
 
 function drawMonsters(){
   const t=Date.now()/1000;
-  for(const m of monsters){
+  for(let mi=0;mi<monsters.length;mi++){
+    const m=monsters[mi];
+    if(deadMonsters.has(mi)){
+      // Draw fading splat for dead monster
+      const {sx,sy}=worldToScreen(m.x,m.y);
+      if(sx<-60||sx>W+60||sy<-60||sy>H+60) continue;
+      ctx.save();
+      ctx.translate(sx,sy);
+      ctx.globalAlpha=0.25;
+      ctx.font=`${CELL*0.4}px serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('💀',0,0);
+      ctx.restore();
+      continue;
+    }
     const {sx,sy}=worldToScreen(m.x,m.y);
     if(sx<-60||sx>W+60||sy<-60||sy>H+60) continue;
     m.phase+=0.04;
@@ -802,8 +898,51 @@ function toggleLight(){
 }
 
 // ═══════════════════════════════════════════════
-// LOAD LEVEL
+// POWERUP BUTTONS
 // ═══════════════════════════════════════════════
+function setupPuBtn(id, useFn){
+  const btn=document.getElementById(id);
+  btn.addEventListener('touchstart',e=>{ e.preventDefault(); e.stopPropagation(); if(STATE==='playing'){ resumeAC(); useFn(); } },{passive:false});
+  btn.addEventListener('mousedown',e=>{ if(STATE==='playing'){ resumeAC(); useFn(); } });
+}
+setupPuBtn('pu-btn-energy', ()=>{
+  if(puEnergy<=0) return;
+  puEnergy--;
+  battery=maxBattery;
+  lightOn=true;
+  lightBtn.classList.add('on');
+  if(settings.sound){ sfxPuEnergy(); sfxLightOn(); }
+  if(settings.vibration) vibe(20);
+  updatePowerupHUD();
+});
+setupPuBtn('pu-btn-life', ()=>{
+  if(puLife<=0) return;
+  puLife--;
+  // Respawn at start of level without resetting level
+  player.x=playerStartX; player.y=playerStartY;
+  player.cx=0; player.cy=0;
+  camX=player.x; camY=player.y;
+  // Reset monsters back to their initial positions (not chasing)
+  for(const m of monsters){
+    m.chasing=false; m.awake=false; m.path=[];
+  }
+  deadMonsters=new Set();
+  battery=maxBattery; lightOn=false;
+  lightBtn.classList.remove('on');
+  if(settings.sound) sfxPuLife();
+  if(settings.vibration) vibe([20,15,40]);
+  // Brief reveal flash
+  revealPhase=true; revealTimer=2000;
+  revealAllCells();
+  updatePowerupHUD();
+});
+setupPuBtn('pu-btn-weapon', ()=>{
+  // Weapon is passive — auto-used on monster contact
+  // Tap to "arm" (visual feedback only — always armed when count>0)
+  if(puWeapon<=0) return;
+  if(settings.sound) sfxPuWeapon();
+  if(settings.vibration) vibe(15);
+});
 function loadLevel(lvl){
   currentLevel=lvl;
   const cfg=LEVEL_CFG[(lvl-1)%LEVEL_CFG.length];
@@ -819,25 +958,131 @@ function loadLevel(lvl){
 
   player=mkPlayer(cfg);
   player.cx=0; player.cy=0;
+  playerStartX=player.x; playerStartY=player.y;
   camX=player.x; camY=player.y;
 
   battery=cfg.battery; maxBattery=cfg.battery;
   lightOn=false; lightLow=false;
   lightBtn.classList.remove('on');
 
+  deadMonsters=new Set();
   monsters=spawnMonsters(cfg.monsters);
+  
+  // Spawn powerups in the maze
+  powerupItems=spawnPowerups(cfg.powerups||2);
+  
   levelTimer=0; lastTs=0;
   initMemory();
 
+  // Start reveal phase
+  revealPhase=true;
+  revealTimer=REVEAL_DURATION;
+  // Light the whole maze during reveal
+  revealAllCells();
+
   updateHUD();
+  updatePowerupHUD();
   document.getElementById('hud').classList.add('show');
   document.getElementById('battery-wrap').classList.add('show');
+  document.getElementById('powerup-hud').classList.add('show');
   document.getElementById('controls').classList.add('show');
 }
 
 // ═══════════════════════════════════════════════
-// UPDATE HUD
+// POWERUP ITEMS IN MAZE
 // ═══════════════════════════════════════════════
+let powerupItems=[]; // [{cx,cy,x,y,type,collected}]
+const PU_TYPES=['energy','life','weapon'];
+
+function spawnPowerups(count){
+  const items=[];
+  const used=new Set();
+  used.add('0,0');
+  used.add(`${exitCell.x},${exitCell.y}`);
+  // Also avoid monster positions
+  for(const m of monsters) used.add(`${m.cx},${m.cy}`);
+  let attempts=0;
+  while(items.length<count && attempts<500){
+    attempts++;
+    const cx=1+~~(Math.random()*(mazeCols-2));
+    const cy=1+~~(Math.random()*(mazeRows-2));
+    const key=`${cx},${cy}`;
+    const distFromPlayer=Math.hypot(cx,cy);
+    if(!used.has(key) && distFromPlayer>3){
+      used.add(key);
+      const type=PU_TYPES[~~(Math.random()*PU_TYPES.length)];
+      items.push({
+        cx,cy,
+        x:cx*CELL+CELL/2+mazeOffX,
+        y:cy*CELL+CELL/2+mazeOffY,
+        type, collected:false,
+        phase:Math.random()*Math.PI*2
+      });
+    }
+  }
+  return items;
+}
+
+function revealAllCells(){
+  // Fill memory map to simulate "full light" for reveal phase
+  for(let cy=0;cy<mazeRows;cy++){
+    for(let cx=0;cx<mazeCols;cx++){
+      memoryMap[cy][cx]=1;
+      trailMap[cy][cx]=0.5;
+    }
+  }
+}
+
+function updatePowerupHUD(){
+  const eSlot=document.getElementById('pu-energy');
+  const lSlot=document.getElementById('pu-life');
+  const wSlot=document.getElementById('pu-weapon');
+  document.getElementById('pu-energy-count').textContent=puEnergy;
+  document.getElementById('pu-life-count').textContent=puLife;
+  document.getElementById('pu-weapon-count').textContent=puWeapon;
+  eSlot.classList.toggle('empty', puEnergy===0);
+  lSlot.classList.toggle('empty', puLife===0);
+  wSlot.classList.toggle('empty', puWeapon===0);
+}
+
+function checkPowerupPickup(){
+  for(const pu of powerupItems){
+    if(pu.collected) continue;
+    const dist=Math.hypot(player.x-pu.x, player.y-pu.y);
+    if(dist<CELL*0.55){
+      pu.collected=true;
+      if(pu.type==='energy'){ puEnergy++; if(settings.sound) sfxPuEnergy(); }
+      else if(pu.type==='life'){ puLife++; if(settings.sound) sfxPuLife(); }
+      else if(pu.type==='weapon'){ puWeapon++; if(settings.sound) sfxPuWeapon(); }
+      if(settings.vibration) vibe([15,10,30]);
+      updatePowerupHUD();
+    }
+  }
+}
+
+function drawPowerups(){
+  const t=Date.now()/1000;
+  for(const pu of powerupItems){
+    if(pu.collected) continue;
+    const {sx,sy}=worldToScreen(pu.x,pu.y);
+    if(sx<-CELL||sx>W+CELL||sy<-CELL||sy>H+CELL) continue;
+    pu.phase+=0.03;
+    const bob=Math.sin(pu.phase)*3;
+    ctx.save();
+    ctx.translate(sx,sy+bob);
+    // Glow ring
+    const glowColor=pu.type==='energy'?'rgba(200,241,53,.4)':pu.type==='life'?'rgba(255,80,80,.4)':'rgba(100,160,255,.4)';
+    ctx.shadowColor=glowColor; ctx.shadowBlur=14;
+    ctx.beginPath(); ctx.arc(0,0,CELL*0.22,0,Math.PI*2);
+    ctx.fillStyle=pu.type==='energy'?'rgba(200,241,53,.15)':pu.type==='life'?'rgba(255,80,80,.15)':'rgba(100,160,255,.15)';
+    ctx.fill();
+    ctx.strokeStyle=glowColor; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.font=`${CELL*0.38}px serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(pu.type==='energy'?'⚡':pu.type==='life'?'❤️':'🗡️',0,0);
+    ctx.restore();
+  }
+}
 function updateHUD(){
   document.getElementById('hud-level').textContent=currentLevel;
   const secs=Math.floor(levelTimer/1000);
@@ -866,6 +1111,20 @@ function gameLoop(ts){
 
   levelTimer+=dt;
   stepTimer+=dt;
+
+  // ── REVEAL PHASE ──────────────────────────────
+  if(revealPhase){
+    revealTimer-=dt;
+    if(revealTimer<=0){
+      revealPhase=false;
+      // All cells have been seen - trail map is fully set, memory decays from here
+      if(settings.sound) sfxReveal();
+      if(settings.vibration) vibe([20,10,20,10,20]);
+    } else {
+      // During reveal: keep all cells lit
+      revealAllCells();
+    }
+  }
 
   // ── PLAYER MOVEMENT ──────────────────────────
   const mag=Math.hypot(jDx,jDy);
@@ -934,10 +1193,18 @@ function gameLoop(ts){
     litPoly=castLight(player.x,player.y,player.angle,cfg.lightRadius,Math.PI*0.62);
   }
 
+  // ── POWERUP PICKUP ────────────────────────────
+  checkPowerupPickup();
+
   // ── MONSTERS ──────────────────────────────────
   let anyChasing=false;
-  for(const m of monsters){
+  for(let mi=0;mi<monsters.length;mi++){
+    const m=monsters[mi];
+    if(deadMonsters.has(mi)) continue; // skip dead monsters
     m.breathTimer-=dt;
+
+    // During reveal phase: monsters don't react
+    if(revealPhase){ continue; }
 
     // Check if player's light hits monster
     if(lightOn && litPoly){
@@ -995,10 +1262,19 @@ function gameLoop(ts){
       }
     }
 
-    // Kill player on contact
+    // Kill player on contact (or kill monster with weapon)
     const distToPlayer=Math.hypot(m.x-player.x, m.y-player.y);
     if(distToPlayer<(m.r+player.r)*0.85){
-      doGameOver(); return;
+      if(puWeapon>0 && m.chasing){
+        // Weapon kills the monster
+        deadMonsters.add(mi);
+        puWeapon--;
+        updatePowerupHUD();
+        if(settings.sound) sfxKill();
+        if(settings.vibration) vibe([40,20,80]);
+      } else {
+        doGameOver(); return;
+      }
     }
   }
 
@@ -1019,8 +1295,28 @@ function gameLoop(ts){
   drawMaze(litPoly, dt);
   drawLight(player.x,player.y,litPoly);
   drawExit();
+  drawPowerups();
   drawMonsters();
   drawPlayer();
+
+  // ── REVEAL COUNTDOWN OVERLAY ──────────────────
+  if(revealPhase){
+    const secs=Math.ceil(revealTimer/1000);
+    const alpha=Math.min(1, revealTimer/300); // fade out in last 300ms
+    ctx.save();
+    // Top banner
+    ctx.fillStyle=`rgba(10,10,10,${0.7*alpha})`;
+    ctx.fillRect(0, H/2-50, W, 100);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillStyle=`rgba(200,241,53,${alpha})`;
+    ctx.font=`900 15px 'Courier New'`;
+    ctx.letterSpacing='0.2em';
+    ctx.fillText('¡MEMORIZA EL LABERINTO!', W/2, H/2-18);
+    ctx.font=`900 38px 'Courier New'`;
+    ctx.fillStyle=`rgba(255,255,255,${alpha})`;
+    ctx.fillText(secs, W/2, H/2+18);
+    ctx.restore();
+  }
 
   updateHUD();
   animId=requestAnimationFrame(gameLoop);
@@ -1035,8 +1331,9 @@ function doGameOver(){
   if(settings.sound) sfxDie();
   if(settings.vibration) vibe([80,40,200]);
   document.getElementById('warning').classList.remove('pulse');
-  // reset progress to level 1
+  // reset progress to level 1 and powerups
   progress.level=1; saveProgress();
+  puEnergy=0; puLife=0; puWeapon=0;
   setTimeout(showGameOver,600);
 }
 
@@ -1103,6 +1400,7 @@ function startLevel(lvl){
 function hideHUD(){
   document.getElementById('hud').classList.remove('show');
   document.getElementById('battery-wrap').classList.remove('show');
+  document.getElementById('powerup-hud').classList.remove('show');
   document.getElementById('controls').classList.remove('show');
   document.getElementById('warning').classList.remove('pulse');
 }
